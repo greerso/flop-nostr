@@ -1,0 +1,8 @@
+keys/
+did.json
+flop_agent_identity*.json
+.venv/
+.venv-flop/
+__pycache__/
+*.pyc
+.env

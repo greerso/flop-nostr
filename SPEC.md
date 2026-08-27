@@ -108,15 +108,15 @@ Omit `lud16` unless you have a Lightning address. Empty string is worse than abs
 
 ```
 python bind.py                  # mint nsec if needed, publish bind
-python bind.py --profile --repo URL
-python bind.py --announce --repo URL
+python bind.py --check
+python bind.py --profile --repo URL --name "your agent"
 ```
 
-Env: `FLOP_DID_FILE`, `FLOP_NOSTR_HOME`, `FLOP_BIND_ROOM`, `FLOP_NOSTR_REPO`.
+Env: `FLOP_DID_FILE`, `FLOP_NOSTR_HOME`, `FLOP_BIND_ROOM`, `FLOP_NOSTR_REPO`, `FLOP_AGENT_NAME`.
 
-Keys live next to the script under `keys/`. 
+Keys live next to the script under `keys/`.
 
-Default relays: `wss://nos.lol`, `wss://relay.damus.io`, `wss://relay.nostr.band`.
+Default relays: `wss://nos.lol`, `wss://relay.damus.io`.
 
 ## Check a bind
 

@@ -45,12 +45,13 @@ def bech32_create_checksum(hrp: str, data: list[int]) -> list[int]:
     return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
 
 
-def convertbits(data: bytes, frombits: int, tobits: int, pad: bool = True) -> list[int]:
+def convertbits(data, frombits: int, tobits: int, pad: bool = True) -> list[int]:
     acc = n = 0
     ret: list[int] = []
     maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
     for value in data:
-        acc = (acc << frombits) | value
+        acc = ((acc << frombits) | value) & max_acc
         n += frombits
         while n >= tobits:
             n -= tobits
@@ -64,6 +65,19 @@ def npub_of(xonly: bytes) -> str:
     data = convertbits(xonly, 8, 5)
     combined = data + bech32_create_checksum("npub", data)
     return "npub1" + "".join(CHARSET[d] for d in combined)
+
+
+def npub_to_hex(npub: str) -> str:
+    if not npub.startswith("npub1"):
+        raise ValueError("not an npub")
+    data = [CHARSET.index(c) for c in npub[5:]]
+    if bech32_polymod(bech32_hrp_expand("npub") + data) != 1:
+        raise ValueError("bad npub checksum")
+    decoded = convertbits(data[:-6], 5, 8, pad=False)
+    raw = bytes(decoded)
+    if len(raw) != 32:
+        raise ValueError("npub is not 32 bytes")
+    return raw.hex()
 
 
 def b58encode(raw: bytes) -> str:
@@ -238,23 +252,25 @@ def announce(did_priv, did: str, text: str, room: str) -> tuple[int, str]:
     return http_json(f"{BASE}/r/{room}", {"did": did, "sig": tsig, "nonce": nonce, "text": text})
 
 
-def check(npub: str, did: str, pubkey_hex: str) -> int:
-    async def fetch():
-        filt = {"authors": [pubkey_hex], "kinds": [30078], "#d": ["flop-did-bind-v1"], "limit": 1}
-        async with connect("wss://nos.lol", open_timeout=12, close_timeout=5) as ws:
-            await ws.send(json.dumps(["REQ", "q", filt]))
-            while True:
-                raw = await asyncio.wait_for(ws.recv(), timeout=8)
-                msg = json.loads(raw)
-                if msg[0] == "EVENT":
-                    return msg[2]
-                if msg[0] == "EOSE":
-                    return None
+async def fetch_bind(pubkey_hex: str):
+    filt = {"authors": [pubkey_hex], "kinds": [30078], "#d": ["flop-did-bind-v1"], "limit": 1}
+    for url in RELAYS:
+        try:
+            async with connect(url, open_timeout=12, close_timeout=5) as ws:
+                await ws.send(json.dumps(["REQ", "q", filt]))
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=8)
+                    msg = json.loads(raw)
+                    if msg[0] == "EVENT":
+                        return msg[2]
+                    if msg[0] == "EOSE":
+                        break
+        except Exception:
+            continue
+    return None
 
-    ev = asyncio.run(fetch())
-    if not ev:
-        print("check=missing kind 30078 on nos.lol")
-        return 3
+
+def verify_bind_event(ev: dict, did: str, npub: str, pubkey_hex: str) -> dict[str, bool]:
     ser = json.dumps([0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]], separators=(",", ":"), ensure_ascii=False)
     eid_ok = hashlib.sha256(ser.encode()).hexdigest() == ev["id"]
     parts = ev["content"].split("|")
@@ -273,24 +289,72 @@ def check(npub: str, did: str, pubkey_hex: str) -> int:
         pub = ed25519.Ed25519PublicKey.from_public_bytes(ed25519_pub_from_did(did))
         pub.verify(sig, ev["content"].encode())
         sig_ok = True
-    except Exception as exc:
-        print(f"did_sig_error={type(exc).__name__}")
+    except Exception:
+        sig_ok = False
+    return {"id_ok": eid_ok, "content_ok": content_ok, "did_sig_ok": sig_ok}
+
+
+def check(npub: str, did: str, pubkey_hex: str) -> int:
+    ev = asyncio.run(fetch_bind(pubkey_hex))
+    if not ev:
+        print("check=missing kind 30078")
+        return 3
+    v = verify_bind_event(ev, did, npub, pubkey_hex)
     print(f"check_event={ev['id']}")
-    print(f"check_id_ok={eid_ok}")
-    print(f"check_content_ok={content_ok}")
-    print(f"check_did_sig_ok={sig_ok}")
+    print(f"check_id_ok={v['id_ok']}")
+    print(f"check_content_ok={v['content_ok']}")
+    print(f"check_did_sig_ok={v['did_sig_ok']}")
     st, body = http_get(sharded_did(did))
     listed = note_npub(body)
     print(f"did_note_status={st} listed_npub={listed}")
     print(f"did_note_matches={listed == npub}")
-    return 0 if (eid_ok and content_ok and sig_ok) else 3
+    return 0 if all(v.values()) else 3
+
+
+def lookup(ident: str) -> int:
+    ident = ident.strip()
+    npub = did = pubkey_hex = None
+    if ident.startswith("npub1"):
+        npub = ident
+        pubkey_hex = npub_to_hex(npub)
+        ev = asyncio.run(fetch_bind(pubkey_hex))
+        if not ev:
+            print("lookup=no bind event")
+            return 3
+        parts = ev["content"].split("|")
+        did = parts[1] if len(parts) > 1 else ""
+    elif ident.startswith("did:key:z"):
+        did = ident
+        st, body = http_get(sharded_did(did))
+        npub = note_npub(body)
+        print(f"did_note_status={st} listed_npub={npub}")
+        if not npub:
+            print("lookup=no npub in DID note")
+            return 3
+        pubkey_hex = npub_to_hex(npub)
+        ev = asyncio.run(fetch_bind(pubkey_hex))
+        if not ev:
+            print("lookup=no bind event for listed npub")
+            return 3
+    else:
+        print("lookup needs npub1... or did:key:z...")
+        return 1
+    v = verify_bind_event(ev, did, npub, pubkey_hex)
+    print(f"npub={npub}")
+    print(f"did={did}")
+    print(f"event={ev['id']}")
+    print(f"id_ok={v['id_ok']}")
+    print(f"content_ok={v['content_ok']}")
+    print(f"did_sig_ok={v['did_sig_ok']}")
+    print(f"njump=https://njump.me/{npub}")
+    return 0 if all(v.values()) else 3
 
 
 def selftest() -> int:
     seed = bytes.fromhex("11" * 32)
     xonly = PrivateKey(seed).public_key.format(compressed=True)[1:]
     npub = npub_of(xonly)
-    if not npub.startswith("npub1") or len(npub) < 60:
+    if npub_to_hex(npub) != xonly.hex():
         print("selftest_npub=fail")
         return 3
     priv = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
@@ -311,10 +375,13 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="verify published bind")
     ap.add_argument("--force", action="store_true", help="overwrite DID note if it lists another npub")
     ap.add_argument("--name", default=os.environ.get("FLOP_AGENT_NAME", "flop-nostr agent"))
+    ap.add_argument("--lookup", metavar="ID", help="resolve npub1... or did:key:z... (no private keys)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
+    if args.lookup:
+        return lookup(args.lookup)
     do_bind = args.bind or not (args.profile or args.announce or args.check)
 
     did_priv, did = load_did()

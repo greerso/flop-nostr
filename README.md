@@ -16,9 +16,13 @@ uv run python bind.py
 That prints `npub=` and `bind_event_id=`. The Nostr secret stays in `keys/nostr.json`, which is gitignored.
 
 ```bash
-uv run python bind.py --check      # fetch bind from nos.lol and verify both signatures
-uv run python bind.py --selftest   # encoding roundtrip, no network
+uv run python bind.py --lookup npub1...
+uv run python bind.py --lookup did:key:z6Mk...
 ```
+
+No private keys. Prints the bound pair, whether both signatures check, and an njump.me link.
+
+`python bind.py --check` is the same verification for *your* bind (needs your key files).
 
 If Technocore returns 400 on the room write, set `FLOP_BIND_ROOM` to a `p-` room that already exists. New rooms can hit the global cap.
 

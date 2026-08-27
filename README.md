@@ -15,6 +15,8 @@ uv run --with coincurve --with cryptography --with websockets python bind.py
 
 That prints `npub=` and `bind_event_id=`. The Nostr secret stays in `keys/nostr.json`, which is gitignored.
 
+`python bind.py --check` fetches the bind from nos.lol and checks it.
+
 If Technocore returns 400 on the room write, set `FLOP_BIND_ROOM` to a `p-` room that already exists. New rooms can hit the global cap.
 
 Publish a Nostr profile that points at this repo:

@@ -81,6 +81,19 @@ def did_from_priv(priv: ed25519.Ed25519PrivateKey) -> str:
     return "did:key:z" + b58encode(b"\xed\x01" + raw_pub)
 
 
+def ed25519_pub_from_did(did: str) -> bytes:
+    if not did.startswith("did:key:z"):
+        raise ValueError("unsupported did")
+    n = 0
+    for ch in did[9:]:
+        n = n * 58 + B58.index(ch)
+    raw = n.to_bytes(max(34, (n.bit_length() + 7) // 8), "big")
+    i = raw.find(b"\xed\x01")
+    if i < 0 or len(raw) - i < 34:
+        raise ValueError("not ed25519 did:key")
+    return raw[i + 2 : i + 34]
+
+
 def b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -171,7 +184,14 @@ async def publish(ev: dict) -> dict[str, str]:
 
 
 def relay_ok(results: dict[str, str]) -> bool:
-    return any(',true' in v or ', true' in v for v in results.values())
+    for v in results.values():
+        try:
+            msg = json.loads(v)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(msg, list) and len(msg) >= 3 and msg[0] == "OK" and msg[2] is True:
+            return True
+    return False
 
 
 def sharded_did(did: str) -> str:
@@ -235,21 +255,51 @@ def check(npub: str, did: str, pubkey_hex: str) -> int:
     if not ev:
         print("check=missing kind 30078 on nos.lol")
         return 3
+    ser = json.dumps([0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]], separators=(",", ":"), ensure_ascii=False)
+    eid_ok = hashlib.sha256(ser.encode()).hexdigest() == ev["id"]
     parts = ev["content"].split("|")
-    ok = (
+    content_ok = (
         len(parts) == 4
         and parts[0] == "flop-did-bind-v1"
         and parts[1] == did
         and parts[2] == npub
         and ev["pubkey"] == pubkey_hex
     )
+    tags = {t[0]: t[1] for t in ev["tags"] if len(t) >= 2}
+    sig_ok = False
+    try:
+        pad = tags["did_sig"] + "=" * ((4 - len(tags["did_sig"]) % 4) % 4)
+        sig = base64.urlsafe_b64decode(pad)
+        pub = ed25519.Ed25519PublicKey.from_public_bytes(ed25519_pub_from_did(did))
+        pub.verify(sig, ev["content"].encode())
+        sig_ok = True
+    except Exception as exc:
+        print(f"did_sig_error={type(exc).__name__}")
     print(f"check_event={ev['id']}")
-    print(f"check_content_ok={ok}")
+    print(f"check_id_ok={eid_ok}")
+    print(f"check_content_ok={content_ok}")
+    print(f"check_did_sig_ok={sig_ok}")
     st, body = http_get(sharded_did(did))
     listed = note_npub(body)
     print(f"did_note_status={st} listed_npub={listed}")
     print(f"did_note_matches={listed == npub}")
-    return 0 if ok else 3
+    return 0 if (eid_ok and content_ok and sig_ok) else 3
+
+
+def selftest() -> int:
+    seed = bytes.fromhex("11" * 32)
+    xonly = PrivateKey(seed).public_key.format(compressed=True)[1:]
+    npub = npub_of(xonly)
+    if not npub.startswith("npub1") or len(npub) < 60:
+        print("selftest_npub=fail")
+        return 3
+    priv = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
+    did = did_from_priv(priv)
+    if ed25519_pub_from_did(did) != priv.public_key().public_bytes_raw():
+        print("selftest_did=fail")
+        return 3
+    print("selftest=ok")
+    return 0
 
 
 def main() -> int:
@@ -261,7 +311,10 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="verify published bind")
     ap.add_argument("--force", action="store_true", help="overwrite DID note if it lists another npub")
     ap.add_argument("--name", default=os.environ.get("FLOP_AGENT_NAME", "flop-nostr agent"))
+    ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
     do_bind = args.bind or not (args.profile or args.announce or args.check)
 
     did_priv, did = load_did()
@@ -322,6 +375,14 @@ def main() -> int:
             print(f"kind0 {url} {r}")
         print(f"kind0_id={ev0['id']}")
         if not relay_ok(results):
+            failed = True
+        created_at = int(time.time())
+        tags_r = [["r", url] for url in RELAYS]
+        ev_r = nostr_event(pk, pubkey_hex, 10002, tags_r, "", created_at)
+        rmap = asyncio.run(publish(ev_r))
+        for url, r in rmap.items():
+            print(f"kind10002 {url} {r}")
+        if not relay_ok(rmap):
             failed = True
 
     if args.announce:

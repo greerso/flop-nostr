@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two-way bind between a Technocore did:key and a Nostr npub."""
+"""Agent chat and notes on Nostr, with an optional Technocore did:key bind."""
 from __future__ import annotations
 
 import argparse, asyncio, base64, hashlib, json, os, socket, stat, time, urllib.error, urllib.parse, urllib.request
@@ -228,7 +228,7 @@ def publish_profile(pk, pubkey_hex, did, npub, repo: str, name: str) -> dict:
     content = json.dumps(
         {
             "name": name,
-            "about": "Technocore agent. Nostr npub bound to did:key so the agent stays findable after Technocore rooms expire.",
+            "about": "Agent chat and notes on Nostr. Optional bind to a Technocore did:key.",
             "bot": True,
             "website": repo or None,
             "did": did,
@@ -252,8 +252,11 @@ def announce(did_priv, did: str, text: str, room: str) -> tuple[int, str]:
     return http_json(f"{BASE}/r/{room}", {"did": did, "sig": tsig, "nonce": nonce, "text": text})
 
 
-async def fetch_bind(pubkey_hex: str):
-    filt = {"authors": [pubkey_hex], "kinds": [30078], "#d": ["flop-did-bind-v1"], "limit": 1}
+async def fetch_events(pubkey_hex: str, kinds: list[int], d_tag: str | None = None, limit: int = 20):
+    filt: dict = {"authors": [pubkey_hex], "kinds": kinds, "limit": limit}
+    if d_tag is not None:
+        filt["#d"] = [d_tag]
+    events = []
     for url in RELAYS:
         try:
             async with connect(url, open_timeout=12, close_timeout=5) as ws:
@@ -262,12 +265,20 @@ async def fetch_bind(pubkey_hex: str):
                     raw = await asyncio.wait_for(ws.recv(), timeout=8)
                     msg = json.loads(raw)
                     if msg[0] == "EVENT":
-                        return msg[2]
+                        events.append(msg[2])
                     if msg[0] == "EOSE":
                         break
+            if events:
+                break
         except Exception:
             continue
-    return None
+    events.sort(key=lambda e: e.get("created_at", 0), reverse=True)
+    return events
+
+
+async def fetch_bind(pubkey_hex: str):
+    evs = await fetch_events(pubkey_hex, [30078], d_tag="flop-did-bind-v1", limit=1)
+    return evs[0] if evs else None
 
 
 def verify_bind_event(ev: dict, did: str, npub: str, pubkey_hex: str) -> dict[str, bool]:
@@ -350,6 +361,82 @@ def lookup(ident: str) -> int:
     return 0 if all(v.values()) else 3
 
 
+def note_d(key: str) -> str:
+    if not key or len(key) > 47 or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in key):
+        raise SystemExit("note key must match [A-Za-z0-9_-]{1,47}")
+    return f"flop-kv-v1:{key}"
+
+
+def resolve_author(author: str | None, npub: str | None, pubkey_hex: str | None) -> tuple[str, str]:
+    if author:
+        if not author.startswith("npub1"):
+            raise SystemExit("--author needs npub1...")
+        return author, npub_to_hex(author)
+    if npub and pubkey_hex:
+        return npub, pubkey_hex
+    raise SystemExit("need local keys or --author npub1...")
+
+
+def cmd_say(pk, pubkey_hex, did: str | None, text: str) -> int:
+    created_at = int(time.time())
+    tags = [["client", "flop-nostr-bind"]]
+    if did:
+        tags.append(["did", did])
+    ev = nostr_event(pk, pubkey_hex, 1, tags, text, created_at)
+    results = asyncio.run(publish(ev))
+    for url, r in results.items():
+        print(f"relay {url} {r}")
+    print(f"event={ev['id']}")
+    if not relay_ok(results):
+        print("ok=0")
+        return 3
+    print("ok=1")
+    return 0
+
+
+def cmd_read(pubkey_hex: str, npub: str) -> int:
+    evs = asyncio.run(fetch_events(pubkey_hex, [1], limit=20))
+    print(f"npub={npub}")
+    print(f"count={len(evs)}")
+    for ev in evs:
+        line = ev.get("content", "").replace("\n", " ")[:200]
+        print(f"{ev['created_at']} {ev['id'][:12]} {line}")
+    return 0
+
+
+def cmd_note_get(pubkey_hex: str, npub: str, key: str) -> int:
+    d = note_d(key)
+    evs = asyncio.run(fetch_events(pubkey_hex, [30078], d_tag=d, limit=1))
+    print(f"npub={npub}")
+    print(f"key={key}")
+    if not evs:
+        print("note=missing")
+        return 3
+    ev = evs[0]
+    print(f"event={ev['id']}")
+    print(f"value={ev.get('content', '')}")
+    return 0
+
+
+def cmd_note_set(pk, pubkey_hex, did: str | None, key: str, value: str) -> int:
+    d = note_d(key)
+    created_at = int(time.time())
+    tags = [["d", d], ["client", "flop-nostr-bind"]]
+    if did:
+        tags.append(["did", did])
+    ev = nostr_event(pk, pubkey_hex, 30078, tags, value, created_at)
+    results = asyncio.run(publish(ev))
+    for url, r in results.items():
+        print(f"relay {url} {r}")
+    print(f"key={key}")
+    print(f"event={ev['id']}")
+    if not relay_ok(results):
+        print("ok=0")
+        return 3
+    print("ok=1")
+    return 0
+
+
 def selftest() -> int:
     seed = bytes.fromhex("11" * 32)
     xonly = PrivateKey(seed).public_key.format(compressed=True)[1:]
@@ -377,18 +464,49 @@ def main() -> int:
     ap.add_argument("--name", default=os.environ.get("FLOP_AGENT_NAME", "flop-nostr agent"))
     ap.add_argument("--lookup", metavar="ID", help="resolve npub1... or did:key:z... (no private keys)")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--say", metavar="TEXT", help="publish a kind 1 note")
+    ap.add_argument("--read", nargs="?", const="", default=None, metavar="NPUB", help="read recent kind 1 notes")
+    ap.add_argument("--note", metavar="KEY", help="read or write a replaceable note")
+    ap.add_argument("--value", metavar="TEXT", help="with --note, write this value")
+    ap.add_argument("--author", metavar="NPUB", help="read/get as this npub (no local keys)")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     if args.lookup:
         return lookup(args.lookup)
-    do_bind = args.bind or not (args.profile or args.announce or args.check)
 
-    did_priv, did = load_did()
-    pk, npub, pubkey_hex, created = load_or_create_nostr()
-    print(f"created_new_nsec={created}")
-    print(f"npub={npub}")
-    print(f"did={did}")
+    remote = args.author or (args.read or None)
+    write_local = bool(args.say or args.value or args.bind or args.profile or args.announce or args.check)
+    read_local = (args.read is not None and not remote) or (args.note and args.value is None and not args.author)
+
+    did_priv = did = pk = npub = pubkey_hex = None
+    if write_local or read_local:
+        if DID_FILE.exists() or args.bind or args.check or args.announce:
+            did_priv, did = load_did()
+        pk, npub, pubkey_hex, created = load_or_create_nostr()
+        print(f"created_new_nsec={created}")
+        print(f"npub={npub}")
+        if did:
+            print(f"did={did}")
+
+    if args.say:
+        return cmd_say(pk, pubkey_hex, did, args.say)
+    if args.read is not None:
+        n, hx = resolve_author(remote, npub, pubkey_hex)
+        return cmd_read(hx, n)
+    if args.note:
+        if args.value is not None:
+            return cmd_note_set(pk, pubkey_hex, did, args.note, args.value)
+        n, hx = resolve_author(args.author, npub, pubkey_hex)
+        return cmd_note_get(hx, n, args.note)
+
+    do_bind = args.bind or not (args.profile or args.announce or args.check)
+    if pk is None:
+        did_priv, did = load_did()
+        pk, npub, pubkey_hex, created = load_or_create_nostr()
+        print(f"created_new_nsec={created}")
+        print(f"npub={npub}")
+        print(f"did={did}")
 
     failed = False
 

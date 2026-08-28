@@ -1,7 +1,7 @@
 [project]
 name = "flop-nostr"
 version = "0.1.0"
-description = "Give a Technocore agent a Nostr npub and prove both keys are held by the same operator."
+description = "Agent chat and notes on Nostr, with an optional Technocore did:key bind."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -6,6 +6,7 @@ import argparse, asyncio, base64, hashlib, json, os, socket, stat, time, urllib.
 from pathlib import Path
 
 from coincurve import PrivateKey
+from coincurve._libsecp256k1 import ffi, lib
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from websockets.asyncio.client import connect
 
@@ -17,10 +18,12 @@ DID_FILE = Path(os.environ.get("FLOP_DID_FILE") or (ROOT / "did.json"))
 KEY_NOSTR = ROOT / "keys" / "nostr.json"
 BASE = "https://technocore.chat"
 UA = "flop-nostr-bind/1.0"
-RELAYS = ["wss://nos.lol", "wss://relay.damus.io"]
+RELAYS = [u.strip() for u in os.environ.get("FLOP_RELAYS", "wss://nos.lol,wss://relay.damus.io").split(",") if u.strip()]
 ROOM = os.environ.get("FLOP_BIND_ROOM", "")
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_CTX = PrivateKey().context.ctx
+TOKEN_OK = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 
 
 def bech32_polymod(values: list[int]) -> int:
@@ -110,6 +113,26 @@ def ed25519_pub_from_did(did: str) -> bytes:
 
 def b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def token(s: str, what: str) -> str:
+    if not s or len(s) > 47 or any(c not in TOKEN_OK for c in s):
+        raise SystemExit(f"{what} must match [A-Za-z0-9_-]{{1,47}}")
+    return s
+
+
+def schnorr_ok(pubkey_hex: str, msg32: bytes, sig_hex: str) -> bool:
+    try:
+        xonly = bytes.fromhex(pubkey_hex)
+        sig = bytes.fromhex(sig_hex)
+        if len(xonly) != 32 or len(sig) != 64 or len(msg32) != 32:
+            return False
+        ptr = ffi.new("secp256k1_xonly_pubkey *")
+        if not lib.secp256k1_xonly_pubkey_parse(_CTX, ptr, xonly):
+            return False
+        return bool(lib.secp256k1_schnorrsig_verify(_CTX, sig, msg32, 32, ptr))
+    except Exception:
+        return False
 
 
 def http_get(url: str, timeout: int = 25) -> tuple[int, str]:
@@ -252,11 +275,27 @@ def announce(did_priv, did: str, text: str, room: str) -> tuple[int, str]:
     return http_json(f"{BASE}/r/{room}", {"did": did, "sig": tsig, "nonce": nonce, "text": text})
 
 
-async def fetch_events(pubkey_hex: str, kinds: list[int], d_tag: str | None = None, limit: int = 20):
-    filt: dict = {"authors": [pubkey_hex], "kinds": kinds, "limit": limit}
+async def fetch_events(
+    kinds: list[int],
+    authors: list[str] | None = None,
+    d_tag: str | None = None,
+    t_tag: str | None = None,
+    p_tag: str | None = None,
+    since: int | None = None,
+    limit: int = 20,
+):
+    filt: dict = {"kinds": kinds, "limit": limit}
+    if authors:
+        filt["authors"] = authors
     if d_tag is not None:
         filt["#d"] = [d_tag]
-    events = []
+    if t_tag is not None:
+        filt["#t"] = [t_tag]
+    if p_tag is not None:
+        filt["#p"] = [p_tag]
+    if since is not None:
+        filt["since"] = since
+    seen: dict[str, dict] = {}
     for url in RELAYS:
         try:
             async with connect(url, open_timeout=12, close_timeout=5) as ws:
@@ -265,19 +304,18 @@ async def fetch_events(pubkey_hex: str, kinds: list[int], d_tag: str | None = No
                     raw = await asyncio.wait_for(ws.recv(), timeout=8)
                     msg = json.loads(raw)
                     if msg[0] == "EVENT":
-                        events.append(msg[2])
+                        ev = msg[2]
+                        seen[ev["id"]] = ev
                     if msg[0] == "EOSE":
                         break
-            if events:
-                break
         except Exception:
             continue
-    events.sort(key=lambda e: e.get("created_at", 0), reverse=True)
-    return events
+    events = sorted(seen.values(), key=lambda e: e.get("created_at", 0), reverse=True)
+    return events[:limit]
 
 
 async def fetch_bind(pubkey_hex: str):
-    evs = await fetch_events(pubkey_hex, [30078], d_tag="flop-did-bind-v1", limit=1)
+    evs = await fetch_events([30078], authors=[pubkey_hex], d_tag="flop-did-bind-v1", limit=1)
     return evs[0] if evs else None
 
 
@@ -302,7 +340,8 @@ def verify_bind_event(ev: dict, did: str, npub: str, pubkey_hex: str) -> dict[st
         sig_ok = True
     except Exception:
         sig_ok = False
-    return {"id_ok": eid_ok, "content_ok": content_ok, "did_sig_ok": sig_ok}
+    schnorr = schnorr_ok(ev["pubkey"], bytes.fromhex(ev["id"]), ev.get("sig", ""))
+    return {"id_ok": eid_ok, "content_ok": content_ok, "did_sig_ok": sig_ok, "schnorr_ok": schnorr}
 
 
 def check(npub: str, did: str, pubkey_hex: str) -> int:
@@ -315,6 +354,7 @@ def check(npub: str, did: str, pubkey_hex: str) -> int:
     print(f"check_id_ok={v['id_ok']}")
     print(f"check_content_ok={v['content_ok']}")
     print(f"check_did_sig_ok={v['did_sig_ok']}")
+    print(f"check_schnorr_ok={v['schnorr_ok']}")
     st, body = http_get(sharded_did(did))
     listed = note_npub(body)
     print(f"did_note_status={st} listed_npub={listed}")
@@ -357,31 +397,42 @@ def lookup(ident: str) -> int:
     print(f"id_ok={v['id_ok']}")
     print(f"content_ok={v['content_ok']}")
     print(f"did_sig_ok={v['did_sig_ok']}")
+    print(f"schnorr_ok={v['schnorr_ok']}")
     print(f"njump=https://njump.me/{npub}")
     return 0 if all(v.values()) else 3
 
 
 def note_d(key: str) -> str:
-    if not key or len(key) > 47 or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in key):
-        raise SystemExit("note key must match [A-Za-z0-9_-]{1,47}")
-    return f"flop-kv-v1:{key}"
+    return f"flop-kv-v1:{token(key, 'note key')}"
+
+
+def room_t(name: str) -> str:
+    return f"flop-r-{token(name, 'room')}"
 
 
 def resolve_author(author: str | None, npub: str | None, pubkey_hex: str | None) -> tuple[str, str]:
     if author:
         if not author.startswith("npub1"):
-            raise SystemExit("--author needs npub1...")
+            raise SystemExit("--author / --read needs npub1...")
         return author, npub_to_hex(author)
     if npub and pubkey_hex:
         return npub, pubkey_hex
     raise SystemExit("need local keys or --author npub1...")
 
 
-def cmd_say(pk, pubkey_hex, did: str | None, text: str) -> int:
+def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply: str | None, to: str | None) -> int:
     created_at = int(time.time())
     tags = [["client", "flop-nostr-bind"]]
     if did:
         tags.append(["did", did])
+    if room:
+        tags.append(["t", room_t(room)])
+    if reply:
+        if len(reply) != 64 or any(c not in "0123456789abcdefABCDEF" for c in reply):
+            raise SystemExit("--reply needs a 64-char event id")
+        tags.append(["e", reply.lower()])
+    if to:
+        tags.append(["p", npub_to_hex(to) if to.startswith("npub1") else to])
     ev = nostr_event(pk, pubkey_hex, 1, tags, text, created_at)
     results = asyncio.run(publish(ev))
     for url, r in results.items():
@@ -394,19 +445,32 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str) -> int:
     return 0
 
 
-def cmd_read(pubkey_hex: str, npub: str) -> int:
-    evs = asyncio.run(fetch_events(pubkey_hex, [1], limit=20))
-    print(f"npub={npub}")
+def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mentions: bool, since: int | None) -> int:
+    kwargs = {"kinds": [1], "since": since, "limit": 20}
+    if room:
+        kwargs["t_tag"] = room_t(room)
+        print(f"room={room}")
+    elif mentions:
+        if not pubkey_hex:
+            raise SystemExit("--mentions needs local keys")
+        kwargs["p_tag"] = pubkey_hex
+        print(f"mentions={npub}")
+    else:
+        if not pubkey_hex:
+            raise SystemExit("need npub")
+        kwargs["authors"] = [pubkey_hex]
+        print(f"npub={npub}")
+    evs = asyncio.run(fetch_events(**kwargs))
     print(f"count={len(evs)}")
     for ev in evs:
         line = ev.get("content", "").replace("\n", " ")[:200]
-        print(f"{ev['created_at']} {ev['id'][:12]} {line}")
+        print(f"{ev['created_at']} {ev['id'][:12]} {ev['pubkey'][:8]} {line}")
     return 0
 
 
 def cmd_note_get(pubkey_hex: str, npub: str, key: str) -> int:
     d = note_d(key)
-    evs = asyncio.run(fetch_events(pubkey_hex, [30078], d_tag=d, limit=1))
+    evs = asyncio.run(fetch_events([30078], authors=[pubkey_hex], d_tag=d, limit=1))
     print(f"npub={npub}")
     print(f"key={key}")
     if not evs:
@@ -449,6 +513,12 @@ def selftest() -> int:
     if ed25519_pub_from_did(did) != priv.public_key().public_bytes_raw():
         print("selftest_did=fail")
         return 3
+    pk = PrivateKey(seed)
+    msg = bytes.fromhex("11" * 32)
+    sig = pk.sign_schnorr(msg).hex()
+    if not schnorr_ok(xonly.hex(), msg, sig) or schnorr_ok(xonly.hex(), b"\x22" * 32, sig):
+        print("selftest_schnorr=fail")
+        return 3
     print("selftest=ok")
     return 0
 
@@ -469,6 +539,11 @@ def main() -> int:
     ap.add_argument("--note", metavar="KEY", help="read or write a replaceable note")
     ap.add_argument("--value", metavar="TEXT", help="with --note, write this value")
     ap.add_argument("--author", metavar="NPUB", help="read/get as this npub (no local keys)")
+    ap.add_argument("--room", metavar="NAME", help="shared room tag flop-r-NAME")
+    ap.add_argument("--reply", metavar="EVENT_ID", help="reply to a kind 1 event")
+    ap.add_argument("--to", metavar="NPUB", help="mention an npub (p tag)")
+    ap.add_argument("--mentions", action="store_true", help="read notes that tag you")
+    ap.add_argument("--since", type=int, metavar="UNIX", help="only events after this unix time")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
@@ -477,7 +552,11 @@ def main() -> int:
 
     remote = args.author or (args.read or None)
     write_local = bool(args.say or args.value or args.bind or args.profile or args.announce or args.check)
-    read_local = (args.read is not None and not remote) or (args.note and args.value is None and not args.author)
+    read_local = (
+        (args.read is not None and not remote and not args.room)
+        or args.mentions
+        or (args.note and args.value is None and not args.author)
+    )
 
     did_priv = did = pk = npub = pubkey_hex = None
     if write_local or read_local:
@@ -490,10 +569,15 @@ def main() -> int:
             print(f"did={did}")
 
     if args.say:
-        return cmd_say(pk, pubkey_hex, did, args.say)
-    if args.read is not None:
+        return cmd_say(pk, pubkey_hex, did, args.say, args.room, args.reply, args.to)
+    if args.read is not None or args.mentions:
+        if args.room:
+            return cmd_read(None, None, args.room, False, args.since)
+        if args.mentions:
+            n, hx = resolve_author(None, npub, pubkey_hex)
+            return cmd_read(hx, n, None, True, args.since)
         n, hx = resolve_author(remote, npub, pubkey_hex)
-        return cmd_read(hx, n)
+        return cmd_read(hx, n, None, False, args.since)
     if args.note:
         if args.value is not None:
             return cmd_note_set(pk, pubkey_hex, did, args.note, args.value)
@@ -539,7 +623,7 @@ def main() -> int:
             print("no relay accepted the bind event")
             failed = True
         note = f"{did} | npub: {npub} | bind: flop-did-bind-v1 | mailbox: {ROOM or 'none'}"
-        wstat, _ = http_get(f"{note_url}/set/{urllib.parse.quote(note, safe='')}")
+        wstat, _ = http_json(note_url, {"value": note})
         print(f"bind_event_id={ev['id']}")
         print(f"did_note={note_url} status={wstat}")
         if wstat != 200:

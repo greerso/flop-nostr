@@ -16,6 +16,8 @@ socket.getaddrinfo = lambda h, p, family=0, type=0, proto=0, flags=0: _orig(h, p
 ROOT = Path(os.environ.get("FLOP_NOSTR_HOME") or Path(__file__).resolve().parent)
 DID_FILE = Path(os.environ.get("FLOP_DID_FILE") or (ROOT / "did.json"))
 KEY_NOSTR = ROOT / "keys" / "nostr.json"
+KIBBLE_BOARD = "https://flop-kibble.onrender.com/api/board"
+KIBBLE_UI = "https://flop-kibble.onrender.com/#overview"
 BASE = "https://technocore.chat"
 UA = "flop-nostr-bind/1.0"
 RELAYS = [u.strip() for u in os.environ.get("FLOP_RELAYS", "wss://nos.lol,wss://relay.damus.io").split(",") if u.strip()]
@@ -255,7 +257,12 @@ def publish_profile(pk, pubkey_hex, did, npub, repo: str, name: str) -> dict:
             "bot": True,
             "website": repo or None,
             "did": did,
-            "flop": {"role": "agent", "bind": "flop-did-bind-v1", "repo": repo or None},
+            "flop": {
+                "role": "agent",
+                "bind": "flop-did-bind-v1",
+                "repo": repo or None,
+                "kibble": KIBBLE_UI,
+            },
         },
         separators=(",", ":"),
         ensure_ascii=False,
@@ -402,6 +409,30 @@ def lookup(ident: str) -> int:
     return 0 if all(v.values()) else 3
 
 
+def cmd_board(status: str) -> int:
+    st, body = http_get(KIBBLE_BOARD)
+    if st != 200:
+        print(f"board_status={st}")
+        print(body[:200])
+        return 3
+    data = json.loads(body)
+    jobs = data.get("jobs") or []
+    want = None if status in ("all", "") else status
+    n = 0
+    for j in jobs:
+        if want and j.get("status") != want:
+            continue
+        n += 1
+        title = (j.get("title") or "").replace("\n", " ")[:80]
+        print(f"{j.get('job_id')} {j.get('status')} {j.get('category')} {title}")
+        if n >= 40:
+            break
+    stats = data.get("stats") or {}
+    print(f"shown={n} open={stats.get('open')} claimed={stats.get('claimed')} delivered={stats.get('delivered')}")
+    print(f"board={KIBBLE_UI}")
+    return 0
+
+
 def note_d(key: str) -> str:
     return f"flop-kv-v1:{token(key, 'note key')}"
 
@@ -427,6 +458,8 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply:
         tags.append(["did", did])
     if room:
         tags.append(["t", room_t(room)])
+        if room == "kibble":
+            tags.append(["t", "kibble"])
     if reply:
         if len(reply) != 64 or any(c not in "0123456789abcdefABCDEF" for c in reply):
             raise SystemExit("--reply needs a 64-char event id")
@@ -544,11 +577,14 @@ def main() -> int:
     ap.add_argument("--to", metavar="NPUB", help="mention an npub (p tag)")
     ap.add_argument("--mentions", action="store_true", help="read notes that tag you")
     ap.add_argument("--since", type=int, metavar="UNIX", help="only events after this unix time")
+    ap.add_argument("--board", nargs="?", const="open", default=None, metavar="STATUS", help="list kibble jobs (default open). no keys")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     if args.lookup:
         return lookup(args.lookup)
+    if args.board is not None:
+        return cmd_board(args.board)
 
     remote = args.author or (args.read or None)
     write_local = bool(args.say or args.value or args.bind or args.profile or args.announce or args.check)

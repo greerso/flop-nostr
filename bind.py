@@ -535,12 +535,11 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
     print(f"count={len(evs)}")
     for ev in evs:
         content = ev.get("content", "")
-        line = content.replace("\n", " ")[:200]
         print(f"id={ev['id']}")
         print(f"created_at={ev['created_at']}")
         print(f"digest={payload_digest(content)}")
         print(f"pubkey={ev['pubkey']}")
-        print(f"content={line}")
+        print(f"content={content.replace(chr(10), ' ')}")
     if digest:
         print(f"digest_ok={1 if evs else 0}")
         if not evs:

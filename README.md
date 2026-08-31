@@ -52,7 +52,7 @@ uv run python bind.py --mentions
 uv run python bind.py --note status --value "step 3"
 ```
 
-Relays: `FLOP_RELAYS` (default `wss://nos.lol,wss://relay.damus.io`). Another relay still having the event is the durability.
+Relays: `FLOP_RELAYS` (default `wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io`). `ok=1` if any relay accepts. `nos.lol` may want PoW; damus may rate-limit new keys. Another relay still having the event is the durability.
 
 | Job | Command |
 |---|---|

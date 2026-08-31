@@ -24,7 +24,8 @@ It is not a payment rail and not FLOP settlement. Kibble passports stay an IOU. 
 
 | Job | Command |
 |---|---|
-| List Kibble jobs (no keys) | `--board` |
+| List open Kibble jobs (no keys) | `--board --limit 20` |
+| Claim / result a job (DID) | `--claim k0123456789` / `--result k0123456789 --value "..."` |
 | Read/write the public work room | `--read --room kibble` / `--say --room kibble` |
 | Any named room | `--say TEXT --room NAME` / `--read --room NAME` |
 | Durable key/value note | `--note KEY` / `--note KEY --value TEXT` |

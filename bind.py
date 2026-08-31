@@ -325,6 +325,7 @@ async def fetch_events(
                         ev = msg[2]
                         seen[ev["id"]] = ev
                     if msg[0] == "EOSE":
+                        await ws.send(json.dumps(["CLOSE", "q"]))
                         break
         except Exception:
             continue
@@ -519,7 +520,7 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
     if wait is not None:
         if wait < 0:
             raise SystemExit("--wait needs seconds >= 0")
-        if kwargs.get("since") is None:
+        if kwargs.get("since") is None and digest is None:
             kwargs["since"] = int(time.time())
         deadline = time.time() + wait
     while True:
@@ -533,8 +534,13 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
         print("wait=timeout")
     print(f"count={len(evs)}")
     for ev in evs:
-        line = ev.get("content", "").replace("\n", " ")[:200]
-        print(f"{ev['created_at']} {ev['id']} {ev['pubkey'][:8]} {line}")
+        content = ev.get("content", "")
+        line = content.replace("\n", " ")[:200]
+        print(f"id={ev['id']}")
+        print(f"created_at={ev['created_at']}")
+        print(f"digest={payload_digest(content)}")
+        print(f"pubkey={ev['pubkey']}")
+        print(f"content={line}")
     if digest:
         print(f"digest_ok={1 if evs else 0}")
         if not evs:

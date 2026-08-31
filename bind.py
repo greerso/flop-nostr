@@ -123,6 +123,17 @@ def token(s: str, what: str) -> str:
     return s
 
 
+def hex64(s: str, what: str) -> str:
+    s = s.lower()
+    if len(s) != 64 or any(c not in "0123456789abcdef" for c in s):
+        raise SystemExit(f"{what} needs a 64-char hex")
+    return s
+
+
+def payload_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def schnorr_ok(pubkey_hex: str, msg32: bytes, sig_hex: str) -> bool:
     try:
         xonly = bytes.fromhex(pubkey_hex)
@@ -451,7 +462,7 @@ def resolve_author(author: str | None, npub: str | None, pubkey_hex: str | None)
     raise SystemExit("need local keys or --author npub1...")
 
 
-def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply: str | None, to: str | None) -> int:
+def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply: str | None, to: str | None, ack: str | None = None) -> int:
     created_at = int(time.time())
     tags = [["client", "flop-nostr-bind"]]
     if did:
@@ -460,16 +471,25 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply:
         tags.append(["t", room_t(room)])
         if room == "kibble":
             tags.append(["t", "kibble"])
+    if ack:
+        ack = hex64(ack, "--ack")
+        if reply and hex64(reply, "--reply") != ack:
+            raise SystemExit("--ack and --reply must be the same event id")
+        reply = ack
+        tags.append(["ack", ack])
+        if not text:
+            text = "ack"
     if reply:
-        if len(reply) != 64 or any(c not in "0123456789abcdefABCDEF" for c in reply):
-            raise SystemExit("--reply needs a 64-char event id")
-        tags.append(["e", reply.lower()])
+        tags.append(["e", hex64(reply, "--reply")])
     if to:
         tags.append(["p", npub_to_hex(to) if to.startswith("npub1") else to])
     ev = nostr_event(pk, pubkey_hex, 1, tags, text, created_at)
     results = asyncio.run(publish(ev))
     for url, r in results.items():
         print(f"relay {url} {r}")
+    print(f"id={ev['id']}")
+    print(f"created_at={created_at}")
+    print(f"digest={payload_digest(text)}")
     print(f"event={ev['id']}")
     if not relay_ok(results):
         print("ok=0")
@@ -478,7 +498,7 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply:
     return 0
 
 
-def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mentions: bool, since: int | None) -> int:
+def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mentions: bool, since: int | None, wait: int | None = None, digest: str | None = None) -> int:
     kwargs = {"kinds": [1], "since": since, "limit": 20}
     if room:
         kwargs["t_tag"] = room_t(room)
@@ -493,11 +513,32 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
             raise SystemExit("need npub")
         kwargs["authors"] = [pubkey_hex]
         print(f"npub={npub}")
-    evs = asyncio.run(fetch_events(**kwargs))
+    if digest:
+        digest = hex64(digest, "--digest")
+    deadline = None
+    if wait is not None:
+        if wait < 0:
+            raise SystemExit("--wait needs seconds >= 0")
+        if kwargs.get("since") is None:
+            kwargs["since"] = int(time.time())
+        deadline = time.time() + wait
+    while True:
+        evs = asyncio.run(fetch_events(**kwargs))
+        if digest:
+            evs = [e for e in evs if payload_digest(e.get("content", "")) == digest]
+        if evs or deadline is None or time.time() >= deadline:
+            break
+        time.sleep(1)  # ponytail: 1s poll; long-poll if a relay supports it
+    if deadline is not None and not evs:
+        print("wait=timeout")
     print(f"count={len(evs)}")
     for ev in evs:
         line = ev.get("content", "").replace("\n", " ")[:200]
-        print(f"{ev['created_at']} {ev['id'][:12]} {ev['pubkey'][:8]} {line}")
+        print(f"{ev['created_at']} {ev['id']} {ev['pubkey'][:8]} {line}")
+    if digest:
+        print(f"digest_ok={1 if evs else 0}")
+        if not evs:
+            return 3
     return 0
 
 
@@ -552,6 +593,15 @@ def selftest() -> int:
     if not schnorr_ok(xonly.hex(), msg, sig) or schnorr_ok(xonly.hex(), b"\x22" * 32, sig):
         print("selftest_schnorr=fail")
         return 3
+    if payload_digest("") != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
+        print("selftest_digest=fail")
+        return 3
+    try:
+        hex64("zz", "--ack")
+        print("selftest_eid=fail")
+        return 3
+    except SystemExit:
+        pass
     print("selftest=ok")
     return 0
 
@@ -574,9 +624,12 @@ def main() -> int:
     ap.add_argument("--author", metavar="NPUB", help="read/get as this npub (no local keys)")
     ap.add_argument("--room", metavar="NAME", help="shared room tag flop-r-NAME")
     ap.add_argument("--reply", metavar="EVENT_ID", help="reply to a kind 1 event")
+    ap.add_argument("--ack", metavar="EVENT_ID", help="kind 1 ack of that event (e + ack tags)")
     ap.add_argument("--to", metavar="NPUB", help="mention an npub (p tag)")
     ap.add_argument("--mentions", action="store_true", help="read notes that tag you")
     ap.add_argument("--since", type=int, metavar="UNIX", help="only events after this unix time")
+    ap.add_argument("--wait", type=int, metavar="SEC", help="with --read, poll until a new event or timeout")
+    ap.add_argument("--digest", metavar="SHA256", help="with --read, only events whose content hashes to this")
     ap.add_argument("--board", nargs="?", const="open", default=None, metavar="STATUS", help="list kibble jobs (default open). no keys")
     args = ap.parse_args()
     if args.selftest:
@@ -587,7 +640,7 @@ def main() -> int:
         return cmd_board(args.board)
 
     remote = args.author or (args.read or None)
-    write_local = bool(args.say or args.value or args.bind or args.profile or args.announce or args.check)
+    write_local = bool(args.say or args.ack or args.value or args.bind or args.profile or args.announce or args.check)
     read_local = (
         (args.read is not None and not remote and not args.room)
         or args.mentions
@@ -604,16 +657,17 @@ def main() -> int:
         if did:
             print(f"did={did}")
 
-    if args.say:
-        return cmd_say(pk, pubkey_hex, did, args.say, args.room, args.reply, args.to)
+    if args.say or args.ack:
+        text = args.say if args.say else "ack"
+        return cmd_say(pk, pubkey_hex, did, text, args.room, args.reply, args.to, ack=args.ack)
     if args.read is not None or args.mentions:
         if args.room:
-            return cmd_read(None, None, args.room, False, args.since)
+            return cmd_read(None, None, args.room, False, args.since, wait=args.wait, digest=args.digest)
         if args.mentions:
             n, hx = resolve_author(None, npub, pubkey_hex)
-            return cmd_read(hx, n, None, True, args.since)
+            return cmd_read(hx, n, None, True, args.since, wait=args.wait, digest=args.digest)
         n, hx = resolve_author(remote, npub, pubkey_hex)
-        return cmd_read(hx, n, None, False, args.since)
+        return cmd_read(hx, n, None, False, args.since, wait=args.wait, digest=args.digest)
     if args.note:
         if args.value is not None:
             return cmd_note_set(pk, pubkey_hex, did, args.note, args.value)

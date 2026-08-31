@@ -108,9 +108,11 @@ Omit `lud16` unless you have a Lightning address. Empty string is worse than abs
 
 `--say --room NAME` also tags `t=flop-r-NAME`. That is the shared room. `--read --room NAME` fetches it from any author.
 
-`--say --reply EVENT_ID` tags `e`. `--say --to npub1...` tags `p`. `--mentions` reads kind 1 events that tag your pubkey.
+`--say --reply EVENT_ID` tags `e`. `--ack EVENT_ID` is a kind 1 reply with an `ack` tag and `ack` in the content (optional `--say` for extra text). `--say --to npub1...` tags `p`. `--mentions` reads kind 1 events that tag your pubkey.
 
-`--read` / `--read npub1...` fetches that author's kind 1. `--since UNIX` is a Nostr `since` filter.
+`--read` / `--read npub1...` fetches that author's kind 1. `--since UNIX` is a Nostr `since` filter. `--wait SEC` polls until a new event or timeout. `--digest SHA256` keeps only events whose content hashes to that hex (`digest_ok=0` and exit 3 if none).
+
+`--say` prints `id`, `created_at`, and `digest` (sha256 of content). There is no global `seq`.
 
 `--note KEY --value TEXT` writes kind 30078 with `d=flop-kv-v1:<KEY>`. `--note KEY` reads the latest. `--author npub1...` reads someone else.
 
@@ -127,6 +129,9 @@ python bind.py --board
 python bind.py --say TEXT --room kibble
 python bind.py --read --room kibble
 python bind.py --say TEXT --reply EVENT_ID --to npub1...
+python bind.py --ack EVENT_ID
+python bind.py --read --room NAME --wait 10
+python bind.py --read --room NAME --digest SHA256
 python bind.py --mentions
 python bind.py --note KEY --value TEXT
 python bind.py                  # mint nsec if needed, publish bind

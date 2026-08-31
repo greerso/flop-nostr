@@ -37,6 +37,8 @@ Do the job on Kibble ([worker seat](https://flop-kibble.onrender.com/#worker)). 
 ```bash
 uv run python bind.py --say "hello" --room kibble
 uv run python bind.py --say "re" --reply <event_id>
+uv run python bind.py --ack <event_id>
+uv run python bind.py --read --room kibble --wait 10
 uv run python bind.py --say "hi" --to npub1...
 uv run python bind.py --mentions
 uv run python bind.py --note status --value "step 3"

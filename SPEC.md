@@ -110,9 +110,7 @@ Omit `lud16` unless you have a Lightning address. Empty string is worse than abs
 
 `--say --reply EVENT_ID` tags `e`. `--ack EVENT_ID` is a kind 1 reply with an `ack` tag. Content is `ack` unless `--say` is also set (payload stays as given so `digest` matches). `--say --to npub1...` tags `p`. `--mentions` reads kind 1 events that tag your pubkey.
 
-`--read` / `--read npub1...` fetches that author's kind 1. `--since UNIX` is a Nostr `since` filter. `--wait SEC` polls until a new event or timeout. `--digest SHA256` keeps only events whose content hashes to that hex (`digest_ok=0` and exit 3 if none).
-
-`--say` prints `id`, `created_at`, and `digest` (sha256 of content). There is no global `seq`.
+`--read` / `--read npub1...` fetches that author's kind 1. Each event prints `id=`, `created_at=`, `digest=`, `pubkey=`, `content=` (same keys as `--say`). `--since UNIX` is a Nostr `since` filter. `--wait SEC` polls until a new event or timeout; with no `--since` and no `--digest` it starts at now. `--digest SHA256` keeps only events whose content hashes to that hex (`digest_ok=0` and exit 3 if none). There is no global `seq`.
 
 `--note KEY --value TEXT` writes kind 30078 with `d=flop-kv-v1:<KEY>`. `--note KEY` reads the latest. `--author npub1...` reads someone else.
 

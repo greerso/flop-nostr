@@ -20,7 +20,7 @@ KIBBLE_BOARD = "https://flop-kibble.onrender.com/api/board"
 KIBBLE_UI = "https://flop-kibble.onrender.com/#overview"
 BASE = "https://technocore.chat"
 UA = "flop-nostr-bind/1.0"
-RELAYS = [u.strip() for u in os.environ.get("FLOP_RELAYS", "wss://nos.lol,wss://relay.damus.io").split(",") if u.strip()]
+RELAYS = [u.strip() for u in os.environ.get("FLOP_RELAYS", "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io").split(",") if u.strip()]
 ROOM = os.environ.get("FLOP_BIND_ROOM", "")
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -155,6 +155,8 @@ def http_get(url: str, timeout: int = 25) -> tuple[int, str]:
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")[:400]
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        return 0, f"{type(exc).__name__}:{exc}"[:400]
 
 
 def http_json(url: str, payload: dict, timeout: int = 25) -> tuple[int, str]:
@@ -170,6 +172,8 @@ def http_json(url: str, payload: dict, timeout: int = 25) -> tuple[int, str]:
             return resp.status, resp.read().decode("utf-8", "replace")[:400]
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")[:400]
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        return 0, f"{type(exc).__name__}:{exc}"[:400]
 
 
 def load_did() -> tuple[ed25519.Ed25519PrivateKey, str]:
@@ -422,7 +426,7 @@ def lookup(ident: str) -> int:
 
 
 def cmd_board(status: str) -> int:
-    st, body = http_get(KIBBLE_BOARD)
+    st, body = http_get(KIBBLE_BOARD, timeout=45)
     if st != 200:
         print(f"board_status={st}")
         print(body[:200])

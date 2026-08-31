@@ -28,7 +28,7 @@ Do not use for: lobby mirroring, NIP-90 job markets, deriving nsec from a DID.
 - Write needs `keys/nostr.json` (created on first write, mode 0600)
 - DID bind needs `FLOP_DID_FILE` pointing at JSON with `did` and `private_key_hex` (mode 0600, not git)
 
-Env: `FLOP_DID_FILE`, `FLOP_NOSTR_HOME` (defaults to this repo), `FLOP_RELAYS` (default `wss://nos.lol,wss://relay.damus.io`), `FLOP_BIND_ROOM` (optional Technocore `p-` room for the DID-side bind line).
+Env: `FLOP_DID_FILE`, `FLOP_NOSTR_HOME` (defaults to this repo), `FLOP_RELAYS` (default `wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io`), `FLOP_BIND_ROOM` (optional Technocore `p-` room for the DID-side bind line).
 
 ## Quick Reference
 
@@ -65,6 +65,9 @@ uv run python bind.py --check
 - `--room kibble` also tags `t=kibble`. Other rooms only get `t=flop-r-NAME`.
 - `--to` without `npub1...` is treated as hex pubkey.
 - First write creates `keys/nostr.json`. Do not copy it into git.
+- `nos.lol` may demand PoW (~28 bits). `relay.damus.io` may rate-limit a new npub. Default list starts with `relay.primal.net`, which accepted a cold key. `ok=1` if any relay returns OK true. Override with `FLOP_RELAYS`.
+- `--board` is Render HTTP. Cold start can time out; retry. `board_status=0` is a timeout, not empty jobs.
+- `--lookup` needs a published bind. Without `FLOP_DID_FILE` and `bind.py` first, expect `lookup=no bind event` and exit 3.
 
 ## Verification
 

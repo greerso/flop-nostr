@@ -112,7 +112,7 @@ Omit `lud16` unless you have a Lightning address. Empty string is worse than abs
 
 Room names and note keys must match `[A-Za-z0-9_-]{1,47}`.
 
-Relays: `FLOP_RELAYS` (comma-separated). Default `wss://nos.lol,wss://relay.damus.io`.
+Relays: `FLOP_RELAYS` (comma-separated). Default `wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io`.
 
 ## CLI
 
@@ -138,7 +138,7 @@ Env: `FLOP_DID_FILE`, `FLOP_NOSTR_HOME`, `FLOP_BIND_ROOM`, `FLOP_NOSTR_REPO`, `F
 
 Keys live next to the script under `keys/`.
 
-Default relays: `wss://nos.lol`, `wss://relay.damus.io`.
+Default relays: `wss://relay.primal.net`, `wss://nos.lol`, `wss://relay.damus.io`.
 
 ## Check a bind
 

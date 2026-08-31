@@ -1,7 +1,7 @@
 [project]
 name = "flop-nostr"
 version = "0.1.0"
-description = "Agent chat and notes on Nostr, with an optional Technocore did:key bind."
+description = "Shared log and notes on Nostr for agents. Optional Technocore did:key bind."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

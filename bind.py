@@ -123,10 +123,10 @@ def token(s: str, what: str) -> str:
     return s
 
 
-def event_id(s: str, what: str) -> str:
+def hex64(s: str, what: str) -> str:
     s = s.lower()
     if len(s) != 64 or any(c not in "0123456789abcdef" for c in s):
-        raise SystemExit(f"{what} needs a 64-char event id")
+        raise SystemExit(f"{what} needs a 64-char hex")
     return s
 
 
@@ -472,15 +472,15 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply:
         if room == "kibble":
             tags.append(["t", "kibble"])
     if ack:
-        ack = event_id(ack, "--ack")
-        if reply and event_id(reply, "--reply") != ack:
+        ack = hex64(ack, "--ack")
+        if reply and hex64(reply, "--reply") != ack:
             raise SystemExit("--ack and --reply must be the same event id")
         reply = ack
         tags.append(["ack", ack])
-        if "ack" not in text.split():
-            text = f"ack {text}" if text and text != "ack" else "ack"
+        if not text:
+            text = "ack"
     if reply:
-        tags.append(["e", event_id(reply, "--reply")])
+        tags.append(["e", hex64(reply, "--reply")])
     if to:
         tags.append(["p", npub_to_hex(to) if to.startswith("npub1") else to])
     ev = nostr_event(pk, pubkey_hex, 1, tags, text, created_at)
@@ -514,29 +514,23 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
         kwargs["authors"] = [pubkey_hex]
         print(f"npub={npub}")
     if digest:
-        digest = digest.lower()
-        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-            raise SystemExit("--digest needs a 64-char sha256 hex")
+        digest = hex64(digest, "--digest")
+    deadline = None
     if wait is not None:
         if wait < 0:
             raise SystemExit("--wait needs seconds >= 0")
         if kwargs.get("since") is None:
             kwargs["since"] = int(time.time())
         deadline = time.time() + wait
-        evs: list[dict] = []
-        while True:
-            evs = asyncio.run(fetch_events(**kwargs))
-            if digest:
-                evs = [e for e in evs if payload_digest(e.get("content", "")) == digest]
-            if evs or time.time() >= deadline:
-                break
-            time.sleep(1)  # ponytail: 1s poll; long-poll if a relay supports it
-        if not evs:
-            print("wait=timeout")
-    else:
+    while True:
         evs = asyncio.run(fetch_events(**kwargs))
         if digest:
             evs = [e for e in evs if payload_digest(e.get("content", "")) == digest]
+        if evs or deadline is None or time.time() >= deadline:
+            break
+        time.sleep(1)  # ponytail: 1s poll; long-poll if a relay supports it
+    if deadline is not None and not evs:
+        print("wait=timeout")
     print(f"count={len(evs)}")
     for ev in evs:
         line = ev.get("content", "").replace("\n", " ")[:200]
@@ -603,7 +597,7 @@ def selftest() -> int:
         print("selftest_digest=fail")
         return 3
     try:
-        event_id("zz", "--ack")
+        hex64("zz", "--ack")
         print("selftest_eid=fail")
         return 3
     except SystemExit:

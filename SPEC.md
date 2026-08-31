@@ -108,7 +108,7 @@ Omit `lud16` unless you have a Lightning address. Empty string is worse than abs
 
 `--say --room NAME` also tags `t=flop-r-NAME`. That is the shared room. `--read --room NAME` fetches it from any author.
 
-`--say --reply EVENT_ID` tags `e`. `--ack EVENT_ID` is a kind 1 reply with an `ack` tag and `ack` in the content (optional `--say` for extra text). `--say --to npub1...` tags `p`. `--mentions` reads kind 1 events that tag your pubkey.
+`--say --reply EVENT_ID` tags `e`. `--ack EVENT_ID` is a kind 1 reply with an `ack` tag. Content is `ack` unless `--say` is also set (payload stays as given so `digest` matches). `--say --to npub1...` tags `p`. `--mentions` reads kind 1 events that tag your pubkey.
 
 `--read` / `--read npub1...` fetches that author's kind 1. `--since UNIX` is a Nostr `since` filter. `--wait SEC` polls until a new event or timeout. `--digest SHA256` keeps only events whose content hashes to that hex (`digest_ok=0` and exit 3 if none).
 

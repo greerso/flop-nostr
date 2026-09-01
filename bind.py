@@ -16,8 +16,6 @@ socket.getaddrinfo = lambda h, p, family=0, type=0, proto=0, flags=0: _orig(h, p
 ROOT = Path(os.environ.get("FLOP_NOSTR_HOME") or Path(__file__).resolve().parent)
 DID_FILE = Path(os.environ.get("FLOP_DID_FILE") or (ROOT / "did.json"))
 KEY_NOSTR = ROOT / "keys" / "nostr.json"
-KIBBLE_BOARD = "https://flop-kibble.onrender.com/api/board"
-KIBBLE_STATUS = "https://flop-kibble.onrender.com/api/status"
 KIBBLE_UI = "https://flop-kibble.onrender.com/#overview"
 BASE = "https://technocore.chat"
 UA = "flop-nostr-bind/1.0"
@@ -142,15 +140,56 @@ def job_id(s: str) -> str:
     return s
 
 
-def board_url(status: str, limit: int, page: int, category: str | None) -> str:
-    q: dict[str, str] = {"limit": str(limit)}
-    if status and status not in ("all", ""):
-        q["status"] = status
-    if page > 1:
-        q["page"] = str(page)
-    if category:
-        q["category"] = category
-    return KIBBLE_BOARD + "?" + urllib.parse.urlencode(q)
+def parse_kibble_line(text: str) -> dict | None:
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 2:
+        return None
+    head, jid = parts[0], parts[1].lower()
+    if len(jid) != 11 or jid[0] != "k" or any(c not in "0123456789abcdef" for c in jid[1:]):
+        return None
+    if head.startswith("JOB v1") and len(parts) >= 4:
+        return {"op": "JOB", "job_id": jid, "category": parts[2], "title": parts[3][:80]}
+    if head.startswith("CLAIM v1"):
+        return {"op": "CLAIM", "job_id": jid}
+    if head.startswith("RESULT v1"):
+        return {"op": "RESULT", "job_id": jid}
+    if head.startswith("ATTEST v1") and len(parts) >= 3:
+        return {"op": "ATTEST", "job_id": jid, "verdict": parts[2].lower()}
+    return None
+
+
+def kibble_index(evs: list[dict]) -> dict[str, dict]:
+    jobs: dict[str, dict] = {}
+    for ev in sorted(evs, key=lambda e: (int(e.get("created_at") or 0), e.get("id") or "")):
+        p = parse_kibble_line(ev.get("content") or "")
+        if not p:
+            continue
+        j = jobs.setdefault(
+            p["job_id"],
+            {"poster": None, "category": "", "title": "", "claimer": None, "result_pk": None, "result_content": "", "status": "open"},
+        )
+        pk = ev.get("pubkey") or ""
+        op = p["op"]
+        if op == "JOB" and j["poster"] is None:
+            j["poster"] = pk
+            j["category"] = p["category"]
+            j["title"] = p["title"]
+        elif op == "CLAIM" and j["claimer"] is None:
+            if j["poster"] and pk == j["poster"]:
+                continue
+            j["claimer"] = pk
+            j["status"] = "claimed"
+        elif op == "RESULT" and j["claimer"] and pk == j["claimer"] and not j["result_pk"]:
+            j["result_pk"] = pk
+            j["result_content"] = ev.get("content") or ""
+            j["status"] = "delivered"
+        elif op == "ATTEST" and j["result_pk"] and pk not in (j["poster"], j["claimer"]):
+            j["status"] = "useful" if p.get("verdict") == "useful" else j["status"]
+    return jobs
+
+
+def kibble_events() -> list[dict]:
+    return asyncio.run(fetch_events([1], t_tag=room_t("kibble"), limit=100))
 
 
 def schnorr_ok(pubkey_hex: str, msg32: bytes, sig_hex: str) -> bool:
@@ -316,20 +355,6 @@ def announce(did_priv, did: str, text: str, room: str) -> tuple[int, str]:
     return http_json(f"{BASE}/r/{room}", {"did": did, "sig": tsig, "nonce": nonce, "text": text})
 
 
-def kibble_say(did_priv, did: str, text: str, timeout: int = 40) -> tuple[int, str]:
-    nonce = str(int(time.time() * 1000))
-    msg = f"kibble|{nonce}|{text}".encode()
-    tsig = b64url(did_priv.sign(msg))
-    url = (
-        f"{BASE}/r/kibble/say-signed/"
-        f"{urllib.parse.quote(did, safe='')}/"
-        f"{urllib.parse.quote(tsig, safe='')}/"
-        f"{nonce}/"
-        f"{urllib.parse.quote(text, safe='')}"
-    )
-    return http_get(url, timeout=timeout)
-
-
 async def fetch_events(
     kinds: list[int],
     authors: list[str] | None = None,
@@ -463,95 +488,68 @@ def cmd_board(status: str, limit: int = 20, page: int = 1, category: str | None 
         raise SystemExit("--limit needs a positive int")
     if page < 1:
         raise SystemExit("--page needs a positive int")
-    st_s, body_s = http_get(KIBBLE_STATUS, timeout=min(timeout, 20))
-    if st_s == 200:
-        try:
-            stj = json.loads(body_s)
-            onr = stj.get("franchise_onramp") or {}
-            if onr.get("open") and onr.get("last_job_id"):
-                print(f"franchise_job={onr['last_job_id']}")
-                print(f"franchise_title={onr.get('title') or ''}")
-        except json.JSONDecodeError:
-            pass
-    else:
-        print(f"status_http={st_s}")
-    url = board_url(status, limit, page, category)
-    print(f"board_url={url}")
-    st, body = http_get(url, timeout=timeout)
-    if st != 200:
-        print(f"board_status={st}")
-        print(body[:200])
-        return cmd_board_from_tape(status, limit, category)
-    data = json.loads(body)
-    jobs = data.get("jobs") or []
+    del timeout
+    jobs = kibble_index(kibble_events())
+    rows = []
     want = None if status in ("all", "") else status
-    n = 0
-    for j in jobs:
-        js = j.get("status") or ""
-        if want and js and js != want:
+    for jid, j in jobs.items():
+        if category and j["category"] != category:
             continue
+        if want and j["status"] != want:
+            continue
+        rows.append((jid, j))
+    start = (page - 1) * limit
+    chunk = rows[start : start + limit]
+    print("board_source=nostr")
+    n = 0
+    for jid, j in chunk:
         n += 1
-        jid = j.get("job_id") or j.get("id") or ""
-        title = (j.get("title") or "").replace("\n", " ")[:80]
-        print(f"{jid} {js or 'open'} {j.get('category')} {title}")
-        if n >= limit:
-            break
-    stats = data.get("stats") or {}
-    print(f"shown={n} limit={limit} page={page} open={stats.get('open')} claimed={stats.get('claimed')} delivered={stats.get('delivered')}")
-    print(f"board={KIBBLE_UI}")
+        title = (j["title"] or "").replace("\n", " ")[:80]
+        print(f"{jid} {j['status']} {j['category']} {title}")
+    open_n = sum(1 for j in jobs.values() if j["status"] == "open")
+    claimed_n = sum(1 for j in jobs.values() if j["status"] == "claimed")
+    delivered_n = sum(1 for j in jobs.values() if j["status"] in ("delivered", "useful"))
+    print(f"shown={n} limit={limit} page={page} open={open_n} claimed={claimed_n} delivered={delivered_n}")
     return 0
 
 
-def cmd_board_from_tape(status: str, limit: int, category: str | None) -> int:
-    st, body = http_get(f"{BASE}/r/kibble?format=json&limit=200", timeout=40)
-    if st != 200:
-        print(f"tape_status={st}")
-        print(body[:200])
-        return 3
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        print("tape_status=bad_json")
-        return 3
-    jobs: dict[str, tuple[str, str]] = {}
-    taken: set[str] = set()
-    for m in data.get("messages") or []:
-        parts = [p.strip() for p in str(m.get("text") or "").split("|")]
-        if len(parts) < 2:
-            continue
-        kind, jid = parts[0], parts[1]
-        if kind.startswith("JOB v1") and len(parts) >= 4:
-            jobs[jid] = (parts[2], parts[3][:80])
-        elif kind.startswith(("CLAIM v1", "RESULT v1", "DELIVER v1")):
-            taken.add(jid)
-    want_open = status in ("open", "")
-    n = 0
-    print("board_source=technocore")
-    for jid, (cat, title) in jobs.items():
-        if category and cat != category:
-            continue
-        open_j = jid not in taken
-        if want_open and not open_j:
-            continue
-        if status == "claimed" and open_j:
-            continue
-        n += 1
-        print(f"{jid} {'open' if open_j else 'claimed'} {cat} {title}")
-        if n >= limit:
-            break
-    print(f"shown={n} limit={limit} tape_jobs={len(jobs)}")
-    print(f"board={KIBBLE_UI}")
-    return 0
-
-
-def cmd_kibble_line(did_priv, did: str, pk, pubkey_hex, text: str) -> int:
-    kst, _ = kibble_say(did_priv, did, text)
-    print(f"kibble_status={kst}")
-    nr = cmd_say(pk, pubkey_hex, did, text, "kibble", None, None)
-    if kst != 200:
-        print("ok=0")
-        return 3
-    return nr
+def cmd_kibble_act(pk, pubkey_hex, did: str | None, op: str, jid: str, extra: str, useful: bool = True) -> int:
+    jid = job_id(jid)
+    jobs = kibble_index(kibble_events())
+    j = jobs.get(jid) or {"poster": None, "claimer": None, "result_pk": None, "result_content": "", "status": "open"}
+    me = pubkey_hex
+    if op == "claim":
+        if j["poster"] and j["poster"] == me:
+            print("error=poster_cannot_claim")
+            return 3
+        if j["claimer"] and j["claimer"] != me:
+            print(f"error=already_claimed claimed_by={j['claimer']}")
+            return 3
+        text = f"CLAIM v1 | {jid} | worker"
+    elif op == "result":
+        if not extra:
+            raise SystemExit("--result needs --say or --value")
+        if j["claimer"] != me:
+            print("error=not_claimant")
+            return 3
+        text = f"RESULT v1 | {jid} | {extra}"
+    elif op == "attest":
+        if not extra:
+            raise SystemExit("--attest needs --value")
+        if not j["result_pk"]:
+            print("error=no_result")
+            return 3
+        if me in (j["poster"], j["claimer"]):
+            print("error=cannot_attest_own")
+            return 3
+        rh = payload_digest(j["result_content"])
+        verdict = "useful" if useful else "not"
+        text = f"ATTEST v1 | {jid} | {verdict} | rh:{rh} | {extra}"
+    else:
+        raise SystemExit("unknown kibble op")
+    print(f"job={jid}")
+    print(f"status={j['status']}")
+    return cmd_say(pk, pubkey_hex, did, text, "kibble", None, None)
 
 
 def note_d(key: str) -> str:
@@ -723,9 +721,20 @@ def selftest() -> int:
         return 3
     except SystemExit:
         pass
-    u = board_url("open", 5, 1, "explain")
-    if "limit=5" not in u or "status=open" not in u or "category=explain" not in u:
-        print("selftest_board_url=fail")
+    p = parse_kibble_line("JOB v1 | k0123456789 | explain | Hello")
+    if not p or p["op"] != "JOB" or p["job_id"] != "k0123456789":
+        print("selftest_parse=fail")
+        return 3
+    idx = kibble_index(
+        [
+            {"created_at": 2, "id": "b" * 64, "pubkey": "aa", "content": "CLAIM v1 | k0123456789 | worker"},
+            {"created_at": 1, "id": "a" * 64, "pubkey": "bb", "content": "CLAIM v1 | k0123456789 | worker"},
+            {"created_at": 0, "id": "c" * 64, "pubkey": "cc", "content": "JOB v1 | k0123456789 | explain | Hello"},
+        ]
+    )
+    j = idx["k0123456789"]
+    if j["poster"] != "cc" or j["claimer"] != "bb" or j["status"] != "claimed":
+        print("selftest_first_claim=fail")
         return 3
     print("selftest=ok")
     return 0
@@ -755,13 +764,16 @@ def main() -> int:
     ap.add_argument("--since", type=int, metavar="UNIX", help="only events after this unix time")
     ap.add_argument("--wait", type=int, metavar="SEC", help="with --read, poll until a new event or timeout")
     ap.add_argument("--digest", metavar="SHA256", help="with --read, only events whose content hashes to this")
-    ap.add_argument("--board", nargs="?", const="open", default=None, metavar="STATUS", help="list kibble jobs (default open). no keys")
-    ap.add_argument("--limit", type=int, default=20, help="with --board, max jobs (API limit=)")
+    ap.add_argument("--board", nargs="?", const="open", default=None, metavar="STATUS", help="list nostr kibble jobs (default open). no keys")
+    ap.add_argument("--limit", type=int, default=20, help="with --board, max jobs")
     ap.add_argument("--page", type=int, default=1, help="with --board, page number")
-    ap.add_argument("--timeout", type=int, default=45, help="HTTP timeout seconds for --board/--claim")
-    ap.add_argument("--category", metavar="CAT", help="with --board, kibble category")
-    ap.add_argument("--claim", metavar="JOB_ID", help="CLAIM v1 on kibble tape + nostr")
+    ap.add_argument("--timeout", type=int, default=45, help="unused; kept so old scripts do not break")
+    ap.add_argument("--category", metavar="CAT", help="with --board/--job, category")
+    ap.add_argument("--job", metavar="TITLE", help="post JOB v1 on nostr kibble")
+    ap.add_argument("--claim", metavar="JOB_ID", help="CLAIM v1 on nostr kibble")
     ap.add_argument("--result", metavar="JOB_ID", help="RESULT v1; needs --say or --value")
+    ap.add_argument("--attest", metavar="JOB_ID", help="ATTEST v1; needs --value")
+    ap.add_argument("--not", dest="not_useful", action="store_true", help="with --attest, verdict not")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
@@ -772,7 +784,17 @@ def main() -> int:
 
     remote = args.author or (args.read or None)
     write_local = bool(
-        args.say or args.ack or args.value or args.bind or args.profile or args.announce or args.check or args.claim or args.result
+        args.say
+        or args.ack
+        or args.value
+        or args.bind
+        or args.profile
+        or args.announce
+        or args.check
+        or args.claim
+        or args.result
+        or args.attest
+        or args.job
     )
     read_local = (
         (args.read is not None and not remote and not args.room)
@@ -782,7 +804,7 @@ def main() -> int:
 
     did_priv = did = pk = npub = pubkey_hex = None
     if write_local or read_local:
-        if DID_FILE.exists() or args.bind or args.check or args.announce or args.claim or args.result:
+        if DID_FILE.exists() or args.bind or args.check or args.announce:
             did_priv, did = load_did()
         pk, npub, pubkey_hex, created = load_or_create_nostr()
         print(f"created_new_nsec={created}")
@@ -790,16 +812,20 @@ def main() -> int:
         if did:
             print(f"did={did}")
 
-    if args.claim or args.result:
-        jid = job_id(args.claim or args.result)
+    if args.job:
+        cat = args.category or "task"
+        body = args.value or ""
+        if not body:
+            raise SystemExit("--job needs --value (success condition)")
+        jid = "k" + payload_digest(f"{cat}|{args.job}|{body}")[:10]
+        text = f"JOB v1 | {jid} | {cat} | {args.job} | {body}"
+        return cmd_say(pk, pubkey_hex, did, text, "kibble", None, None)
+    if args.claim or args.result or args.attest:
         if args.claim:
-            text = f"CLAIM v1 | {jid} | worker"
-        else:
-            summary = args.say or args.value
-            if not summary:
-                raise SystemExit("--result needs --say or --value")
-            text = f"RESULT v1 | {jid} | {summary}"
-        return cmd_kibble_line(did_priv, did, pk, pubkey_hex, text)
+            return cmd_kibble_act(pk, pubkey_hex, did, "claim", args.claim, "")
+        if args.result:
+            return cmd_kibble_act(pk, pubkey_hex, did, "result", args.result, args.say or args.value or "")
+        return cmd_kibble_act(pk, pubkey_hex, did, "attest", args.attest, args.value or "", useful=not args.not_useful)
     if args.say or args.ack:
         text = args.say if args.say else "ack"
         return cmd_say(pk, pubkey_hex, did, text, args.room, args.reply, args.to, ack=args.ack)

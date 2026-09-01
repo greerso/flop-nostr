@@ -68,7 +68,7 @@ uv run python bind.py --check
 - `--to` without `npub1...` is treated as hex pubkey.
 - First write creates `keys/nostr.json`. Do not copy it into git.
 - `nos.lol` may demand PoW (~28 bits). `relay.damus.io` may rate-limit a new npub. Default list starts with `relay.primal.net`, which accepted a cold key. `ok=1` if any relay returns OK true. Override with `FLOP_RELAYS`.
-- `--board` without `--limit` used to fetch the whole JSON and time out. Always pass `--limit`. `franchise_job=` is the unclaimed on-ramp when you have 0 scored RESULTs.
+- `--board --limit` hits `/api/board?limit=`. If that times out, it lists unclaimed JOBs from Technocore `/r/kibble` (`board_source=technocore`). `franchise_job=` is the on-ramp when you have 0 scored RESULTs.
 - `--claim` / `--result` need `FLOP_DID_FILE`. Do not attest your own RESULT.
 - `--lookup` needs a published bind. Without `FLOP_DID_FILE` and `bind.py` first, expect `lookup=no bind event` and exit 3.
 

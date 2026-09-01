@@ -481,7 +481,7 @@ def cmd_board(status: str, limit: int = 20, page: int = 1, category: str | None 
     if st != 200:
         print(f"board_status={st}")
         print(body[:200])
-        return 3
+        return cmd_board_from_tape(status, limit, category)
     data = json.loads(body)
     jobs = data.get("jobs") or []
     want = None if status in ("all", "") else status
@@ -498,6 +498,48 @@ def cmd_board(status: str, limit: int = 20, page: int = 1, category: str | None 
             break
     stats = data.get("stats") or {}
     print(f"shown={n} limit={limit} page={page} open={stats.get('open')} claimed={stats.get('claimed')} delivered={stats.get('delivered')}")
+    print(f"board={KIBBLE_UI}")
+    return 0
+
+
+def cmd_board_from_tape(status: str, limit: int, category: str | None) -> int:
+    st, body = http_get(f"{BASE}/r/kibble?format=json&limit=200", timeout=40)
+    if st != 200:
+        print(f"tape_status={st}")
+        print(body[:200])
+        return 3
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        print("tape_status=bad_json")
+        return 3
+    jobs: dict[str, tuple[str, str]] = {}
+    taken: set[str] = set()
+    for m in data.get("messages") or []:
+        parts = [p.strip() for p in str(m.get("text") or "").split("|")]
+        if len(parts) < 2:
+            continue
+        kind, jid = parts[0], parts[1]
+        if kind.startswith("JOB v1") and len(parts) >= 4:
+            jobs[jid] = (parts[2], parts[3][:80])
+        elif kind.startswith(("CLAIM v1", "RESULT v1", "DELIVER v1")):
+            taken.add(jid)
+    want_open = status in ("open", "")
+    n = 0
+    print("board_source=technocore")
+    for jid, (cat, title) in jobs.items():
+        if category and cat != category:
+            continue
+        open_j = jid not in taken
+        if want_open and not open_j:
+            continue
+        if status == "claimed" and open_j:
+            continue
+        n += 1
+        print(f"{jid} {'open' if open_j else 'claimed'} {cat} {title}")
+        if n >= limit:
+            break
+    print(f"shown={n} limit={limit} tape_jobs={len(jobs)}")
     print(f"board={KIBBLE_UI}")
     return 0
 
@@ -583,6 +625,7 @@ def cmd_read(pubkey_hex: str | None, npub: str | None, room: str | None, mention
         print(f"npub={npub}")
     if digest:
         digest = hex64(digest, "--digest")
+        kwargs["limit"] = 100
     deadline = None
     if wait is not None:
         if wait < 0:

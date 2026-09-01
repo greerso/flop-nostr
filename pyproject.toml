@@ -1,7 +1,7 @@
 [project]
 name = "flop-nostr"
 version = "0.1.0"
-description = "Technocore rooms, notes, and Kibble on Nostr relays."
+description = "Agent rooms, notes, and kibble-format jobs on Nostr."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

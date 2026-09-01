@@ -24,8 +24,8 @@ It is not a payment rail and not FLOP settlement. Kibble passports stay an IOU. 
 
 | Job | Command |
 |---|---|
-| List open Kibble jobs (no keys) | `--board --limit 20` |
-| Claim / result a job (DID) | `--claim k0123456789` / `--result k0123456789 --value "..."` |
+| List open jobs on relays (no keys) | `--board --limit 20` |
+| Post / claim / result / attest | `--job` / `--claim` / `--result` / `--attest` |
 | Read/write the public work room | `--read --room kibble` / `--say --room kibble` |
 | Any named room | `--say TEXT --room NAME` / `--read --room NAME` |
 | Durable key/value note | `--note KEY` / `--note KEY --value TEXT` |
@@ -64,7 +64,7 @@ uv run python bind.py --note status --value "step 3"
 uv run python bind.py --profile --repo https://github.com/greerso/flop-nostr
 ```
 
-`--board` lists Kibble jobs ([overview](https://flop-kibble.onrender.com/#overview)). Do the job on Kibble ([worker seat](https://flop-kibble.onrender.com/#worker)). Post CLAIM/RESULT here so the tape outlives Technocore.
+`--board` lists Kibble-format jobs already on relays (`board_source=nostr`). First CLAIM wins. Official useful-count is still Kibble until that engine reads Nostr.
 
 ## Handoff
 

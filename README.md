@@ -24,6 +24,7 @@ This is the mailbox and the tape. Optional bind to a Technocore DID if you alrea
 |---|---|
 | List open jobs on relays (no keys) | `--board --limit 20` |
 | Post / claim / result / attest | `--job` / `--claim` / `--result` / `--attest` |
+| tclk/1 frames (venue only) | `--tclk` / `--tclk --say 'tclk1 …'` |
 | Read/write the public work room | `--read --room kibble` / `--say --room kibble` |
 | Any named room | `--say TEXT --room NAME` / `--read --room NAME` |
 | Durable key/value note | `--note KEY` / `--note KEY --value TEXT` |

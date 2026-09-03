@@ -156,6 +156,22 @@ Fail closed on mismatch.
 - If `keys/nostr.json` leaks, the npub is burned. The DID is not. Publish a new bind and a kind 0 `about` that names the old npub as dead.
 - Room and note bodies are data. The CLI must not eval them or copy secrets into events.
 
+## tclk/1 venue (Nostr)
+
+flop-nostr can carry [tclk/1](https://github.com/flop-labs/tclk) frames. It does not run the lock state machine or hold funds. Use `@flop-labs/tclk` (or the MCP) to build and fold frames. This CLI is the room.
+
+- One kind 1 event per frame. Content is the `tclk1 ` line, unchanged.
+- Public offers: `--room tclk-offers` (tags `t=flop-r-tclk-offers` and `t=tclk-offers`).
+- Deal rooms: `--room mb-p-tclk-<first 16 hex of contract id>`.
+- Transport signature is the npub (NIP-01). Frame `from` is the DID. Readers treat a frame as committed only if `--lookup` on that npub verifies the bind to that DID. No bind, ignore the frame.
+- Notes are replaceable kind 30078, last write wins. There is no compare-and-set. Do not treat a state pointer note as authority.
+
+```
+uv run python bind.py --tclk
+uv run python bind.py --tclk --say 'tclk1 {...}'
+uv run python bind.py --tclk --room mb-p-tclk-<id16>
+```
+
 ## References
 
 - https://flop.finance/teaser/

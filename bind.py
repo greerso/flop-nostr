@@ -513,6 +513,28 @@ def cmd_board(status: str, limit: int = 20, page: int = 1, category: str | None 
     return 0
 
 
+def cmd_tclk_read(room: str, limit: int = 20) -> int:
+    if limit < 1:
+        raise SystemExit("--limit needs a positive int")
+    evs = asyncio.run(fetch_events([1], t_tag=room_t(room), limit=max(limit, 50)))
+    print(f"room={room}")
+    print("board_source=nostr")
+    n = 0
+    for ev in evs:
+        c = ev.get("content") or ""
+        if not c.startswith("tclk1 "):
+            continue
+        n += 1
+        print(f"id={ev['id']}")
+        print(f"created_at={ev['created_at']}")
+        print(f"pubkey={ev.get('pubkey')}")
+        print(f"content={c}")
+        if n >= limit:
+            break
+    print(f"count={n}")
+    return 0
+
+
 def cmd_kibble_act(pk, pubkey_hex, did: str | None, op: str, jid: str, extra: str, useful: bool = True) -> int:
     jid = job_id(jid)
     jobs = kibble_index(kibble_events())
@@ -579,6 +601,8 @@ def cmd_say(pk, pubkey_hex, did: str | None, text: str, room: str | None, reply:
         tags.append(["t", room_t(room)])
         if room == "kibble":
             tags.append(["t", "kibble"])
+        if room == "tclk-offers" or room.startswith("mb-p-tclk-"):
+            tags.append(["t", room])
     if ack:
         ack = hex64(ack, "--ack")
         if reply and hex64(reply, "--reply") != ack:
@@ -736,6 +760,9 @@ def selftest() -> int:
     if j["poster"] != "cc" or j["claimer"] != "bb" or j["status"] != "claimed":
         print("selftest_first_claim=fail")
         return 3
+    if "JOB v1 | k0123456789".startswith("tclk1 ") or not "tclk1 {\"type\":\"offer\"}".startswith("tclk1 "):
+        print("selftest_tclk=fail")
+        return 3
     print("selftest=ok")
     return 0
 
@@ -774,6 +801,7 @@ def main() -> int:
     ap.add_argument("--result", metavar="JOB_ID", help="RESULT v1; needs --say or --value")
     ap.add_argument("--attest", metavar="JOB_ID", help="ATTEST v1; needs --value")
     ap.add_argument("--not", dest="not_useful", action="store_true", help="with --attest, verdict not")
+    ap.add_argument("--tclk", action="store_true", help="read/post tclk/1 frames on Nostr (venue only)")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
@@ -781,6 +809,8 @@ def main() -> int:
         return lookup(args.lookup)
     if args.board is not None:
         return cmd_board(args.board, args.limit, args.page, args.category, args.timeout)
+    if args.tclk and not args.say:
+        return cmd_tclk_read(args.room or "tclk-offers", args.limit)
 
     remote = args.author or (args.read or None)
     write_local = bool(
@@ -795,6 +825,7 @@ def main() -> int:
         or args.result
         or args.attest
         or args.job
+        or (args.tclk and args.say)
     )
     read_local = (
         (args.read is not None and not remote and not args.room)
@@ -804,7 +835,7 @@ def main() -> int:
 
     did_priv = did = pk = npub = pubkey_hex = None
     if write_local or read_local:
-        if DID_FILE.exists() or args.bind or args.check or args.announce:
+        if DID_FILE.exists() or args.bind or args.check or args.announce or (args.tclk and args.say):
             did_priv, did = load_did()
         pk, npub, pubkey_hex, created = load_or_create_nostr()
         print(f"created_new_nsec={created}")
@@ -826,6 +857,12 @@ def main() -> int:
         if args.result:
             return cmd_kibble_act(pk, pubkey_hex, did, "result", args.result, args.say or args.value or "")
         return cmd_kibble_act(pk, pubkey_hex, did, "attest", args.attest, args.value or "", useful=not args.not_useful)
+    if args.tclk and args.say:
+        if not args.say.startswith("tclk1 "):
+            raise SystemExit("--tclk --say needs a tclk1 frame")
+        if not did:
+            raise SystemExit("--tclk write needs FLOP_DID_FILE (frame from= did:key)")
+        return cmd_say(pk, pubkey_hex, did, args.say, args.room or "tclk-offers", args.reply, args.to)
     if args.say or args.ack:
         text = args.say if args.say else "ack"
         return cmd_say(pk, pubkey_hex, did, text, args.room, args.reply, args.to, ack=args.ack)

@@ -1,0 +1,12 @@
+{
+  "name": "flop-nostr",
+  "private": true,
+  "type": "module",
+  "description": "Agent rooms, notes, and kibble-format jobs on Nostr.",
+  "dependencies": {
+    "@flop-labs/tclk": "^0.1.0",
+    "@flop-labs/tclk-mcp": "^0.1.0",
+    "nostr-tools": "^2.17.0",
+    "ws": "^8.18.0"
+  }
+}

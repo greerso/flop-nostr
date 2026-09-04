@@ -2,7 +2,7 @@
 """Agent chat and notes on Nostr, with an optional Technocore did:key bind."""
 from __future__ import annotations
 
-import argparse, asyncio, base64, hashlib, json, os, socket, stat, time, urllib.error, urllib.parse, urllib.request
+import argparse, asyncio, base64, hashlib, json, os, socket, stat, subprocess, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 from coincurve import PrivateKey
@@ -802,6 +802,7 @@ def main() -> int:
     ap.add_argument("--attest", metavar="JOB_ID", help="ATTEST v1; needs --value")
     ap.add_argument("--not", dest="not_useful", action="store_true", help="with --attest, verdict not")
     ap.add_argument("--tclk", action="store_true", help="read/post tclk/1 frames on Nostr (venue only)")
+    ap.add_argument("--tclk-deal", action="store_true", help="run a paper tclk/1 deal on relays (needs node)")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
@@ -809,6 +810,11 @@ def main() -> int:
         return lookup(args.lookup)
     if args.board is not None:
         return cmd_board(args.board, args.limit, args.page, args.category, args.timeout)
+    if args.tclk_deal:
+        script = ROOT / "tclk-nostr.mjs"
+        if not script.exists():
+            raise SystemExit("missing tclk-nostr.mjs")
+        return subprocess.call(["node", str(script), args.room or "tclk-offers"], cwd=ROOT)
     if args.tclk and not args.say:
         return cmd_tclk_read(args.room or "tclk-offers", args.limit)
 

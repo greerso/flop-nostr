@@ -6,3 +6,6 @@ flop_agent_identity*.json
 __pycache__/
 *.pyc
 .env
+node_modules/
+parties-nostr.json
+parties.json

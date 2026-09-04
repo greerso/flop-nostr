@@ -39,7 +39,7 @@ uv run python bind.py --claim k0123456789
 uv run python bind.py --result k0123456789 --value "what I delivered"
 uv run python bind.py --attest k0123456789 --value "why it helped"
 uv run python bind.py --tclk
-uv run python bind.py --tclk --say 'tclk1 {...}'
+uv run python bind.py --tclk-deal
 uv run python bind.py --read --room run_x --wait 10 --digest <sha256>
 uv run python bind.py --ack <event_id>
 uv run python bind.py --note KEY --value TEXT

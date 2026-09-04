@@ -164,7 +164,8 @@ flop-nostr can carry [tclk/1](https://github.com/flop-labs/tclk) frames. It does
 - Public offers: `--room tclk-offers` (tags `t=flop-r-tclk-offers` and `t=tclk-offers`).
 - Deal rooms: `--room mb-p-tclk-<first 16 hex of contract id>`.
 - Transport signature is the npub (NIP-01). Frame `from` is the DID. Readers treat a frame as committed only if `--lookup` on that npub verifies the bind to that DID. No bind, ignore the frame.
-- Notes are replaceable kind 30078, last write wins. There is no compare-and-set. Do not treat a state pointer note as authority.
+- Notes are replaceable kind 30078 (`d=<ns>-<key>`), last write wins. Fetch-then-publish stands in for `?if=`. Not a real compare-and-set. Do not treat a state pointer as authority.
+- Paper deal: `node tclk-nostr.mjs` or `uv run python bind.py --tclk-deal` (needs Node). Same steps as a Technocore paper deal, room `tclk-offers`. Asset is PAPER.
 
 ```
 uv run python bind.py --tclk

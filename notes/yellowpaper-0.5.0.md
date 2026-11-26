@@ -5,6 +5,19 @@ Version recorded: **0.5.0 draft**, updated **2026-09-05**.
 Status: implementation spec, iterating. Sections marked planned are not live.
 This file is a local reading note, not FLOP Labs docs and not a claim of eligibility.
 
+## Update 2026-11-26 (supersedes the 40%, 24% and 2.48bn figures below)
+
+Testnet opened 2026-11-24, **unscored** until an announced activation block. No backfill. Sources: flop.finance/airdrop, /testnet, flop.network/llms.txt.
+
+- Genesis pool **4.4bn**: miners 1.2bn (pro rata verified FLOPs served), agents 1.2bn (pro rata compute bought in settled sessions), validators 1.2M FLOP per seat up to 1,000 seats (by testnet ranking), reserve 0.8bn (creators, referrals, builders; terms unpublished).
+- Miners: 25% liquid at genesis, rest unlocks 1:1 with mainnet earnings. Agents: nothing liquid, 3 FLOP spent on inference unlocks 1. Validators: airdrop is the bond, ~10 year linear.
+- Testnet stake is **sponsored**. A sponsored miner needs attested hardware or admission from the application list (flop.finance/apply/miner).
+- One participant one score. Spend to your own miner is not credited. Fraud forfeits.
+- No public testnet miner pack or testnet gateway yet. Wait for docs.flop.network/operators.
+- Faucet earns no credit. Testnet agent claim: `POST faucet.flop.network/v1/testnet/agent-claims`, 10 FLOP/24h, signed `flop-faucet-agent/v1|<genesis>|<ss58>|<nonce>`. Script: `/opt/data/scripts/flop-testnet-faucet.py`.
+- Agent wallet: SS58 (format 42) of the DID's Ed25519 key.
+
+
 Normative body: §1–§15 plus Appendices A (params), F (formats), G (extrinsics).
 Informative: B sources, C miner walkthrough, D fee map, E open items, H status matrix.
 Unresolved mechanisms live in **Appendix E** as numbered stubs. Do not treat intro-site pie charts as closing those stubs.
